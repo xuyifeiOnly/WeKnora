@@ -3,7 +3,8 @@
         <!-- 展开时：Logo + 搜索/折叠按钮同行 -->
         <div class="logo_row" v-if="!uiStore.sidebarCollapsed">
             <div class="logo_box" @click="router.push('/platform/knowledge-bases')" style="cursor: pointer;">
-                <img class="logo" src="@/assets/img/weknora.png" alt="">
+                <img class="logo logo-light" src="@/assets/img/rutang-logo.svg" alt="如棠科技">
+                <img class="logo logo-dark" src="@/assets/img/rutang-logo-white.svg" alt="如棠科技">
                 <sup v-if="isLiteEdition" class="lite-badge">Lite</sup>
             </div>
             <div class="logo_actions">
@@ -1321,6 +1322,15 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
             height: auto;
         }
 
+        /* 浅色主题用彩色 logo，深色主题切换到反白 logo（替代旧版 invert 滤镜） */
+        .logo-light {
+            display: block;
+        }
+
+        .logo-dark {
+            display: none;
+        }
+
         .lite-badge {
             margin-left: 2px;
             align-self: flex-start;
@@ -1828,9 +1838,13 @@ const resizeSidebar = (delta: number, keyboard: boolean) => {
 }
 </style>
 <style lang="less">
-// Dark mode: invert dark logo to light
-html[theme-mode="dark"] .aside_box .logo_box .logo {
-    filter: invert(1) hue-rotate(180deg);
+// Dark mode: 切换到反白版 logo（浅色主题使用彩色版）
+html[theme-mode="dark"] .aside_box .logo_box .logo-light {
+    display: none;
+}
+
+html[theme-mode="dark"] .aside_box .logo_box .logo-dark {
+    display: block;
 }
 
 // Dark mode: 滚动条在深色背景下需要更亮的颜色才看得见
