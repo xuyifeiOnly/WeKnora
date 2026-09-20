@@ -544,24 +544,32 @@ start_frontend() {
     
     cd "$PROJECT_ROOT/frontend"
     
-    # 检查 npm 是否安装
-    if ! command -v npm &> /dev/null; then
-        log_error "npm 未安装"
+    # 检查包管理器：本仓库前端使用 pnpm 管理依赖，未安装时回退 npm
+    if command -v pnpm &> /dev/null; then
+        PKG_MANAGER="pnpm"
+    elif command -v npm &> /dev/null; then
+        PKG_MANAGER="npm"
+    else
+        log_error "未检测到 pnpm 或 npm，请先安装"
         return 1
     fi
     
     # 检查依赖是否已安装
     if [ ! -d "node_modules" ]; then
         log_warning "node_modules 不存在，正在安装依赖..."
-        npm install
+        "$PKG_MANAGER" install
     fi
     
     log_info "启动 Vite 开发服务器..."
     log_info "前端将运行在 http://localhost:5173"
     log_info "前端 API 代理目标: ${VITE_DEV_PROXY_TARGET:-${FRONTEND_BACKEND_URL:-http://localhost:8080}}"
     
-    # 运行开发服务器
-    npm run dev
+    # 运行开发服务器（pnpm 直接 pnpm dev，npm 需要 npm run dev）
+    if [ "$PKG_MANAGER" = "pnpm" ]; then
+        pnpm dev
+    else
+        npm run dev
+    fi
 }
 
 # 解析命令
