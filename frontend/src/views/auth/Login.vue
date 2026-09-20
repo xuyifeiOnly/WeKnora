@@ -408,10 +408,10 @@ const isRegisterMode = ref(false)
 const showLanguageMenu = ref(false)
 const oidcEnabled = ref(false)
 const oidcProviderName = ref('')
-// registrationEnabled defaults to true so that on first paint the Register
-// link is visible; the actual mode is fetched from /auth/config in onMounted.
-// In invite_only mode the link/card are hidden.
-const registrationEnabled = ref(true)
+// 首屏不渲染注册入口：部署侧关闭注册（DISABLE_REGISTRATION=true →
+// invite_only）时，默认 true 会让"创建账户"按钮闪现一下再消失。
+// 实际模式由 onMounted 中的 /auth/config 决定，注册开启时配置返回后正常显示。
+const registrationEnabled = ref(false)
 const complexPasswordEnabled = ref(false)
 
 // invite-link state. When the URL carries ?token=xxx we resolve it to
