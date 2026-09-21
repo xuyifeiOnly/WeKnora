@@ -192,9 +192,11 @@ else
     log_info ".env 已更新 WEKNORA_BOOTSTRAP_SYSTEM_ADMIN_EMAIL=${ADMIN_EMAIL}"
 fi
 
-# 环境变量变更需要重建容器才能生效
-log_info "重建并重启 app 容器以触发提权..."
-compose up -d app >/dev/null
+# 必须强制重建：bootstrap 只在 app 进程启动时执行一次，
+# 而 compose 在 .env 无变化时会跳过重建（日志显示 Running 而非 Recreated），
+# 导致提权根本不执行。--force-recreate 保证进程一定重启。
+log_info "强制重建 app 容器以触发提权..."
+compose up -d --force-recreate app >/dev/null
 
 log_info "等待 app 重新就绪..."
 ready=0

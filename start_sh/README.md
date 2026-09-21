@@ -17,6 +17,8 @@
 | ⑥ | `06-init-admin.sh` | **初始化管理员**：临时开启注册 → 创建账号并提权 → 关闭注册 | 否 | 1~2 分钟 |
 | ⑦ | `07-verify.sh` | **部署验证**：容器健康、接口可用、注册已关闭、品牌已生效、管理员存在 | 否 | 30 秒 |
 
+> ⑧ `08-rebuild.sh` 是**日常代码更新**用的，不属于首次部署流程，详见下方「代码更新后如何发布」。
+>
 > `_lib.sh` 是公共函数库，**不要直接执行**，由其他脚本自动加载。
 
 ---
@@ -67,6 +69,50 @@ chmod +x start_sh/*.sh scripts/*.sh
 # 验证时附带登录测试
 ./start_sh/07-verify.sh --login admin@rutang.cn --password 'YourPass@123'
 ```
+
+---
+
+## 代码更新后如何发布
+
+**第一步：同步代码到服务器**（GitHub 不通时用 rsync，只传改动的文件）
+
+```bash
+# 本地执行
+cd /Users/xuyifei_coco/Documents/fork_demo/WeKnora
+rsync -avz --exclude='.git' --exclude='node_modules' --exclude='dist' --exclude='.local-data' \
+  ./ root@<服务器IP>:/opt/weknora/
+```
+
+**第二步：按改动范围重建**
+
+| 改了什么 | 执行命令 | 说明 |
+|----------|----------|------|
+| 前端（Vue/TS/CSS、品牌、文案、页面） | `./start_sh/08-rebuild.sh` | 默认目标，最常见 |
+| 后端（`cmd/`、`internal/` 的 Go 代码） | `./start_sh/08-rebuild.sh app` | 在 Docker 内编译，需几分钟 |
+| 文档解析（`docreader/` 的 Python） | `./start_sh/08-rebuild.sh docreader` | |
+| 多个组件一起改 | `./start_sh/08-rebuild.sh all` | |
+| 只改了 `.env` | `docker compose up -d` | **无需重建**，环境变量变更会自动重建容器 |
+| 只改了 `config/config.yaml` | `docker compose restart app` | 该文件是 bind mount，重启即生效 |
+| 只改了 `docker-compose.yml` | `docker compose up -d` | 自动重建受影响的服务 |
+
+脚本会自动完成「构建镜像 → 滚动重启 → 等待健康检查」。
+**构建失败时容器不会被重启**，仍在跑旧版本，不会造成服务中断。
+
+```bash
+# 例子：改了登录页文案
+./start_sh/08-rebuild.sh
+#   等价于 docker compose build frontend
+#        + docker compose up -d frontend
+#        + 等待 http://127.0.0.1:9008/ 返回 200
+
+# 例：改了 Go 后端代码
+./start_sh/08-rebuild.sh app
+
+# 例：怀疑构建缓存有问题
+./start_sh/08-rebuild.sh --no-cache frontend
+```
+
+> 前端更新后，浏览器请用 `Ctrl/Cmd + Shift + R` 强制刷新，绕过静态资源缓存。
 
 ---
 

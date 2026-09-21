@@ -76,7 +76,7 @@ CURRENT_REG="$(env_value DISABLE_REGISTRATION)"
 if [ "$CURRENT_REG" = "true" ]; then
     set_env DISABLE_REGISTRATION false || exit 1
     log_info "DISABLE_REGISTRATION 已临时设为 false"
-    compose up -d app >/dev/null 2>&1 || true
+    compose up -d --force-recreate app >/dev/null 2>&1 || true
     log_info "等待 app 重启..."
     API_PORT="$(env_value APP_PORT)"; API_PORT="${API_PORT:-8080}"
     wait_http "http://127.0.0.1:${API_PORT}/health" 200 30 "后端 app" || exit 1
@@ -100,7 +100,7 @@ if [ "$KEEP_REG" -eq 1 ]; then
 else
     log_step "步骤 3/3 关闭公开注册"
     set_env DISABLE_REGISTRATION true || exit 1
-    compose up -d app >/dev/null 2>&1 || true
+    compose up -d --force-recreate app >/dev/null 2>&1 || true
 
     API_PORT="$(env_value APP_PORT)"; API_PORT="${API_PORT:-8080}"
     if wait_http "http://127.0.0.1:${API_PORT}/health" 200 30 "后端 app"; then
