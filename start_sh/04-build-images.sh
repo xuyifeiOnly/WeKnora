@@ -72,7 +72,7 @@ log_warn "这一步会覆盖 pull 下来的官方 ui 镜像 —— 品牌定制�
 BUILD_ARGS=()
 [ -n "$NPM_REGISTRY" ] && BUILD_ARGS+=(--build-arg "NPM_REGISTRY=${NPM_REGISTRY}")
 
-if ! compose build "${BUILD_ARGS[@]}" frontend; then
+if ! compose build ${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"} frontend; then
     log_error "前端镜像构建失败"
     echo ""
     log_tip "常见原因:"

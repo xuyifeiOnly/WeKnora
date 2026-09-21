@@ -1,17 +1,46 @@
 # Build extension and daemon from the same pinned source on the runtime architecture.
 FROM --platform=$TARGETPLATFORM node:24-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e AS browserskill
 WORKDIR /build
+# Debian 源镜像：国内网络直连 deb.debian.org 会让 apt-get update 失败（exit 100）
+ARG APK_MIRROR_ARG
+RUN if [ -n "$APK_MIRROR_ARG" ]; then \
+        sed -i "s@deb.debian.org@${APK_MIRROR_ARG}@g" /etc/apt/sources.list.d/debian.sources; \
+    fi
 RUN apt-get update && \
     apt-get install -y --no-install-recommends git python3 ca-certificates curl build-essential cmake pkg-config && \
     rm -rf /var/lib/apt/lists/*
 ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo
 ENV PATH=/usr/local/cargo/bin:$PATH
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
-COPY scripts/build_browserskill.sh scripts/browserskill-release.json ./scripts/
-COPY patches/browserskill ./patches/browserskill
+
+# 浏览器技能（Chrome 扩展 + Rust 守护进程）。
+# 该阶段需要 Rust 工具链，国内直连 sh.rustup.rs 会失败，因此提供两条出路：
+#   1) ENABLE_BROWSERSKILL=0 完全跳过（默认 1 保持上游行为）——不需要该功能时最省事
+#   2) RUSTUP_DIST_SERVER 指向国内镜像，如 https://mirrors.tuna.tsinghua.edu.cn/rustup
+ARG ENABLE_BROWSERSKILL=1
+ARG RUSTUP_DIST_SERVER=""
 ARG TARGETOS
 ARG TARGETARCH
-RUN bash scripts/build_browserskill.sh /opt/weknora/browserskill "${TARGETOS}/${TARGETARCH}"
+
+RUN --mount=type=bind,source=scripts,target=/build/scripts \
+    --mount=type=bind,source=patches,target=/build/patches \
+    if [ "$ENABLE_BROWSERSKILL" != "1" ]; then \
+        echo "[browserskill] 已跳过（ENABLE_BROWSERSKILL=${ENABLE_BROWSERSKILL}），该功能在镜像内不可用"; \
+        mkdir -p /opt/weknora/browserskill; \
+    else \
+        if [ -n "$RUSTUP_DIST_SERVER" ]; then \
+            export RUSTUP_DIST_SERVER; \
+            export RUSTUP_UPDATE_ROOT="${RUSTUP_DIST_SERVER}/rustup"; \
+            _arch="$(uname -m)"; \
+            echo "[browserskill] 使用 Rust 镜像源 ${RUSTUP_DIST_SERVER}"; \
+            curl -sSf "${RUSTUP_DIST_SERVER}/rustup/dist/${_arch}-unknown-linux-gnu/rustup-init" -o /tmp/rustup-init && \
+            chmod +x /tmp/rustup-init && \
+            /tmp/rustup-init -y --profile minimal --default-toolchain stable --no-modify-path; \
+        else \
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+                | sh -s -- -y --profile minimal --default-toolchain stable; \
+        fi && \
+        bash scripts/build_browserskill.sh /opt/weknora/browserskill "${TARGETOS}/${TARGETARCH}"; \
+    fi
 
 # Build stage
 FROM golang:1.26-bookworm AS builder
@@ -45,7 +74,26 @@ COPY go.mod go.sum ./
 COPY third_party/anydoc-go/go.mod third_party/anydoc-go/go.mod
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY cmd/download cmd/download
-RUN go run cmd/download/duckdb/duckdb.go
+# 预装 DuckDB 扩展（spatial / excel），供数据分析工具枚举 Excel 工作表使用。
+# extensions.duckdb.org 在容器网络下偶发 502/超时，因此加入重试；
+# 完全不可达时可设 WITH_DUCKDB_EXT=0 跳过（代价：数据分析工具读 Excel 能力受限）。
+ARG WITH_DUCKDB_EXT=1
+RUN if [ "$WITH_DUCKDB_EXT" = "1" ]; then \
+        go build -o /tmp/dl-duckdb ./cmd/download/duckdb/ && \
+        ok=0; \
+        for i in 1 2 3 4 5; do \
+            if /tmp/dl-duckdb; then ok=1; break; fi; \
+            echo "[duckdb] 第 ${i} 次下载失败，10s 后重试..."; \
+            sleep 10; \
+        done; \
+        if [ "$ok" != "1" ]; then \
+            echo "[duckdb] 扩展预装失败。可设 WITH_DUCKDB_EXT=0 跳过（数据分析工具将无法枚举 Excel 工作表）"; \
+            exit 1; \
+        fi; \
+        echo "[duckdb] 扩展预装完成"; \
+    else \
+        echo "[duckdb] 跳过扩展预装（WITH_DUCKDB_EXT=${WITH_DUCKDB_EXT}）"; \
+    fi
 COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod bash ./scripts/copy-licenses.sh /license-bundle
 
@@ -100,8 +148,12 @@ COPY --from=browserskill /opt/weknora/browserskill /opt/weknora/browserskill
 # Create a non-root user first
 RUN useradd -m -s /bin/bash appuser
 
-# First, install ca-certificates without mirror to ensure HTTPS works
-RUN apt-get update && \
+# 先装 ca-certificates。这里也先切镜像源：国内直连 deb.debian.org 会失败；
+# 镜像源为 HTTP 时不需要证书，为 HTTPS 时基础镜像通常已自带 ca-certificates。
+RUN if [ -n "$APK_MIRROR_ARG" ]; then \
+        sed -i "s@deb.debian.org@${APK_MIRROR_ARG}@g" /etc/apt/sources.list.d/debian.sources; \
+    fi && \
+    apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 

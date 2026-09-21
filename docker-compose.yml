@@ -41,6 +41,21 @@ services:
       args:
         - APK_MIRROR_ARG=${APK_MIRROR_ARG:-}
         - WITH_ANYDOC=${WITH_ANYDOC:-1}
+        # 浏览器技能需 Rust 工具链，国内直连 sh.rustup.rs 会失败：
+        #   ENABLE_BROWSERSKILL=0    跳过该阶段（不需要浏览器操作功能时）
+        #   RUSTUP_DIST_SERVER=...   改用国内 Rust 镜像（如清华）保留功能
+        - ENABLE_BROWSERSKILL=${ENABLE_BROWSERSKILL:-1}
+        - RUSTUP_DIST_SERVER=${RUSTUP_DIST_SERVER:-}
+        # Go 模块代理（默认 proxy.golang.org，国内不可达时可设 https://goproxy.cn）
+        - GOPROXY_ARG=${GOPROXY_ARG:-}
+        # DuckDB 扩展预装（spatial/excel，供数据分析工具用）；网络受限可设 0 跳过
+        - WITH_DUCKDB_EXT=${WITH_DUCKDB_EXT:-1}
+        # 构建代理：宿主机启用 fake-ip 类代理（Clash/Surge 等）时，容器拿不到真实 IP，
+        # 经 host.docker.internal 走宿主机代理即可绕过
+        - HTTP_PROXY=${BUILD_HTTP_PROXY:-}
+        - HTTPS_PROXY=${BUILD_HTTPS_PROXY:-}
+        - http_proxy=${BUILD_HTTP_PROXY:-}
+        - https_proxy=${BUILD_HTTPS_PROXY:-}
     container_name: WeKnora-app
     ports:
       - "${APP_PORT:-8080}:8080"

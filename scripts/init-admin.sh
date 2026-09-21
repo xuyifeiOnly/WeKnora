@@ -49,6 +49,8 @@ fi
 ADMIN_EMAIL="$1"
 ADMIN_USERNAME="$2"
 ADMIN_PASSWORD="$3"
+# 账号已存在时为 1：此时注册步骤被跳过，密码保持原样而非本次入参
+ACCOUNT_EXISTED=0
 
 # ---------- 环境检查 ----------
 if [ ! -f .env ]; then
@@ -150,7 +152,9 @@ register_body="$(printf '%s' "$register_resp" | sed '$d')"
 if [ "$register_code" = "200" ] || [ "$register_code" = "201" ]; then
     log_success "账号创建成功"
 elif printf '%s' "$register_body" | grep -qi 'exist'; then
-    log_warn "账号已存在，跳过创建（密码以既有账号为准）"
+    ACCOUNT_EXISTED=1
+    log_warn "账号已存在，跳过创建"
+    log_warn "本次入参的密码【不会】被设置，该账号仍使用原有密码"
 elif printf '%s' "$register_body" | grep -qi 'invite-only\|invite only'; then
     log_error "注册功能已关闭，无法创建账号"
     echo ""
@@ -232,7 +236,15 @@ if [ "$is_admin" = "t" ]; then
     echo "  登录地址: http://<服务器IP>:${FRONTEND_PORT_VAL}"
     echo "  邮箱    : ${ADMIN_EMAIL}"
     echo "  用户名  : ${ADMIN_USERNAME}"
-    echo "  密码    : （脚本入参中填写的密码）"
+    if [ "$ACCOUNT_EXISTED" -eq 1 ]; then
+        echo "  密码    : ⚠️ 保持原有密码（本次入参未生效）"
+        echo ""
+        log_warn "如需把密码改为本次入参的值，执行以下命令："
+        echo '      HASH=$(htpasswd -bnBC 10 "" "你的新密码" | tr -d ":\n" | sed "s/\$2y\$/\$2a$/")'
+        echo "      docker compose exec -T postgres psql -U ${DB_USER} -d ${DB_NAME} -c \"UPDATE users SET password_hash='\$HASH' WHERE email='${ADMIN_EMAIL}';\""
+    else
+        echo "  密码    : （脚本入参中填写的密码）"
+    fi
     echo ""
     log_warn "下一步：关闭公开注册"
     echo "    1) 编辑 .env：DISABLE_REGISTRATION=true"
