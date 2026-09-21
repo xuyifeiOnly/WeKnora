@@ -65,8 +65,10 @@ echo ""
 # ---------- 1. 构建 ----------
 START_TS=$(date +%s)
 for svc in $SERVICES; do
-    log_info "构建 ${svc} 镜像..."
-    if ! compose build "${BUILD_ARGS[@]}" "$svc" 2>&1 | tail -12; then
+    log_info "构建 ${svc} 镜像...（耗时数分钟，输出持续滚动即表示正常进行，请勿中断）"
+    # 注意：这里不能管道到 tail —— tail 会缓冲输出，直到命令结束才打印，
+    # 构建过程屏幕全黑，容易被误判为卡死。
+    if ! compose build "${BUILD_ARGS[@]}" "$svc"; then
         log_error "${svc} 镜像构建失败，容器未重启（仍运行旧版本）"
         log_tip "排查: docker compose build ${svc}"
         exit 1
@@ -80,7 +82,7 @@ log_step "重启容器"
 # --force-recreate：保证容器一定用新镜像重建。
 # 否则当 compose 未能识别出变化（例如镜像 ID 未变、或容器被手动改动过）时，
 # 会显示 "Running" 直接跳过，导致发布未生效。
-if ! compose up -d --force-recreate $SERVICES 2>&1 | tail -10; then
+if ! compose up -d --force-recreate $SERVICES; then
     log_error "容器重启失败"
     log_tip "查看: docker compose logs --tail=50"
     exit 1

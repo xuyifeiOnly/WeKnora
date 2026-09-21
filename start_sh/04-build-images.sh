@@ -47,9 +47,10 @@ echo "      镜像加速器 : $([ "$MIRRORS_EXIST" -eq 1 ] && echo '已配置' |
 # ---------- 1. 拉取基础镜像 ----------
 if [ "$SKIP_PULL" -eq 0 ]; then
     log_step "拉取基础镜像（postgres / redis / app / docreader / ui）"
-    log_tip "首次拉取较大（约 7.5 GB），耗时取决于网络"
+    log_tip "首次拉取较大（约 7.5 GB），耗时取决于网络；输出持续滚动即表示正常进行"
 
-    if ! compose pull 2>&1 | tail -20; then
+    # 不能管道到 tail：会缓冲输出导致过程屏幕全黑，容易被误判为卡死
+    if ! compose pull; then
         log_error "镜像拉取失败"
         echo ""
         log_tip "排查方向:"
@@ -71,7 +72,7 @@ log_warn "这一步会覆盖 pull 下来的官方 ui 镜像 —— 品牌定制�
 BUILD_ARGS=()
 [ -n "$NPM_REGISTRY" ] && BUILD_ARGS+=(--build-arg "NPM_REGISTRY=${NPM_REGISTRY}")
 
-if ! compose build "${BUILD_ARGS[@]}" frontend 2>&1 | tail -25; then
+if ! compose build "${BUILD_ARGS[@]}" frontend; then
     log_error "前端镜像构建失败"
     echo ""
     log_tip "常见原因:"

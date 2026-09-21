@@ -45,7 +45,7 @@ fi
 
 # ---------- 1. 启动 ----------
 log_step "启动容器"
-if ! compose "${EXTRA_ARGS[@]}" up -d 2>&1 | tail -15; then
+if ! compose "${EXTRA_ARGS[@]}" up -d; then
     log_error "启动失败"
     log_tip "查看详情: docker compose logs --tail=50"
     exit 1
