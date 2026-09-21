@@ -42,6 +42,18 @@ bad()  { log_error   "$1"; FAIL=$((FAIL + 1)); }
 
 log_step "部署验证（前端 :${FE_PORT} / 后端 :${API_PORT}）"
 
+# ---------- 0. 等待健康检查稳定 ----------
+# 刚重建的容器 healthcheck 处于 starting 阶段（start_period 约 60s），
+# 此时直接读状态会误报为异常；先等其收敛为 healthy 再检查。
+log_info "等待容器健康检查稳定..."
+for svc in app docreader postgres; do
+    for _ in $(seq 1 30); do
+        st="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}running{{end}}' "WeKnora-${svc}" 2>/dev/null || echo unknown)"
+        [ "$st" = "healthy" ] && break
+        sleep 3
+    done
+done
+
 # ---------- 1. 容器状态 ----------
 log_info "[1/6] 容器状态"
 for svc in app docreader postgres frontend; do

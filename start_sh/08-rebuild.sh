@@ -77,7 +77,10 @@ BUILD_SEC=$(( $(date +%s) - START_TS ))
 
 # ---------- 2. 重启容器 ----------
 log_step "重启容器"
-if ! compose up -d $SERVICES 2>&1 | tail -10; then
+# --force-recreate：保证容器一定用新镜像重建。
+# 否则当 compose 未能识别出变化（例如镜像 ID 未变、或容器被手动改动过）时，
+# 会显示 "Running" 直接跳过，导致发布未生效。
+if ! compose up -d --force-recreate $SERVICES 2>&1 | tail -10; then
     log_error "容器重启失败"
     log_tip "查看: docker compose logs --tail=50"
     exit 1
