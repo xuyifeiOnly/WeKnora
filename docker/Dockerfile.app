@@ -1,25 +1,20 @@
 # Build extension and daemon from the same pinned source on the runtime architecture.
 FROM --platform=$TARGETPLATFORM node:24-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e AS browserskill
 WORKDIR /build
-# Debian 源镜像：国内网络直连 deb.debian.org 会让 apt-get update 失败（exit 100）
-ARG APK_MIRROR_ARG
-RUN if [ -n "$APK_MIRROR_ARG" ]; then \
-        sed -i "s@deb.debian.org@${APK_MIRROR_ARG}@g" /etc/apt/sources.list.d/debian.sources; \
-    fi
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends git python3 ca-certificates curl build-essential cmake pkg-config && \
-    rm -rf /var/lib/apt/lists/*
-ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo
-ENV PATH=/usr/local/cargo/bin:$PATH
-
 # 浏览器技能（Chrome 扩展 + Rust 守护进程）。
-# 该阶段需要 Rust 工具链，国内直连 sh.rustup.rs 会失败，因此提供两条出路：
-#   1) ENABLE_BROWSERSKILL=0 完全跳过（默认 1 保持上游行为）——不需要该功能时最省事
+# 该阶段需要 apt + Rust 工具链，国内直连 deb.debian.org / sh.rustup.rs 常失败：
+#   1) ENABLE_BROWSERSKILL=0 完全跳过（含 apt）——打包/不需要该功能时最省事
 #   2) RUSTUP_DIST_SERVER 指向国内镜像，如 https://mirrors.tuna.tsinghua.edu.cn/rustup
+#   3) 构建时传 HTTP_PROXY / BUILD_HTTP_PROXY（Clash fake-ip 下容器必须走代理）
 ARG ENABLE_BROWSERSKILL=1
+ARG APK_MIRROR_ARG
 ARG RUSTUP_DIST_SERVER=""
+ARG NPM_REGISTRY=https://registry.npmmirror.com
 ARG TARGETOS
 ARG TARGETARCH
+
+ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo
+ENV PATH=/usr/local/cargo/bin:$PATH
 
 RUN --mount=type=bind,source=scripts,target=/build/scripts \
     --mount=type=bind,source=patches,target=/build/patches \
@@ -27,6 +22,12 @@ RUN --mount=type=bind,source=scripts,target=/build/scripts \
         echo "[browserskill] 已跳过（ENABLE_BROWSERSKILL=${ENABLE_BROWSERSKILL}），该功能在镜像内不可用"; \
         mkdir -p /opt/weknora/browserskill; \
     else \
+        if [ -n "$APK_MIRROR_ARG" ]; then \
+            sed -i "s@deb.debian.org@${APK_MIRROR_ARG}@g" /etc/apt/sources.list.d/debian.sources; \
+        fi && \
+        apt-get update && \
+        apt-get install -y --no-install-recommends git python3 ca-certificates curl build-essential cmake pkg-config && \
+        rm -rf /var/lib/apt/lists/* && \
         if [ -n "$RUSTUP_DIST_SERVER" ]; then \
             export RUSTUP_DIST_SERVER; \
             export RUSTUP_UPDATE_ROOT="${RUSTUP_DIST_SERVER}/rustup"; \
@@ -39,6 +40,8 @@ RUN --mount=type=bind,source=scripts,target=/build/scripts \
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
                 | sh -s -- -y --profile minimal --default-toolchain stable; \
         fi && \
+        export NPM_REGISTRY="${NPM_REGISTRY}" && \
+        echo "[browserskill] npm 源 ${NPM_REGISTRY}" && \
         bash scripts/build_browserskill.sh /opt/weknora/browserskill "${TARGETOS}/${TARGETARCH}"; \
     fi
 

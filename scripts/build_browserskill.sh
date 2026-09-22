@@ -40,8 +40,13 @@ for patch in "$repo_root"/patches/browserskill/*.patch; do
 done
 (
   cd "$build_dir/source"
-  npx --yes pnpm@10.17.0 install --frozen-lockfile
-  npx --yes pnpm@10.17.0 ext:build:zip
+  # 国内默认走 npmmirror，避免 registry.npmjs.org ECONNRESET
+  npm_registry="${NPM_REGISTRY:-https://registry.npmmirror.com}"
+  export npm_config_registry="$npm_registry"
+  export NPM_CONFIG_REGISTRY="$npm_registry"
+  # pnpm 也认这个；npx 拉 pnpm 本体时同样走该源
+  npx --yes --registry "$npm_registry" pnpm@10.17.0 install --frozen-lockfile
+  npx --yes --registry "$npm_registry" pnpm@10.17.0 ext:build:zip
 )
 cp "$build_dir/source/apps/extension/dist/browser-skillextension-${extension_version}-chrome.zip" "$output_dir/browser-skill-weknora-${extension_version}.zip"
 cp "$build_dir/source/LICENSE" "$output_dir/BrowserSkill-LICENSE"
