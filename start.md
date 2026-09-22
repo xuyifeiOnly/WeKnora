@@ -8,32 +8,47 @@
 
 ---
 
+## ⚠️ 最重要的一条：镜像架构必须是 linux/amd64
+
+服务器是 x86_64（amd64），而开发机是 Apple Silicon（M 系列）时，默认构建出来的是 **arm64** 镜像。
+**arm64 镜像传到服务器上无法运行**，容器会起不来并报 `exec format error`。
+
+所以本文档所有构建命令都显式指定 `--platform linux/amd64`，
+并且打包前后各验证一次架构（见「一」「二」两节）。
+
+> 若开发机本身是 x86_64 的 Linux/Windows，构建结果天然是 amd64，
+> 可省略 `--platform`，但仍建议按本文档验证一次架构再上传。
+
+---
+
 ## 流程概览
 
 ```
-本地                                        服务器 (/opt/www/WeKnora)
-─────────────────────────────────────      ────────────────────────────
-docker compose build app frontend
+本地（Mac 上需交叉构建）                     服务器 (/opt/www/WeKnora)
+────────────────────────────────────────    ────────────────────────────
+docker buildx build --platform linux/amd64
         ↓
-docker save → tmp/*.tar.gz  (压缩包)
+docker save …:amd64 → tmp/*-amd64.tar.gz
         ↓  scp 上传
-                                     →     docker load < /tmp/*.tar.gz
+                                     →     docker load < tmp/*-amd64.tar.gz
+                                     →     docker tag …:amd64 …:latest
                                      →     docker compose up -d --force-recreate
                                      →     验证
 ```
 
-| 镜像 | 大小（未压缩） | 压缩后 | 说明 |
-|------|----------------|--------|------|
-| `wechatopenai/weknora-app` | 1.6 GB | ≈ 500 MB | 后端 Go 服务 |
-| `wechatopenai/weknora-ui` | 80 MB | ≈ 30 MB | 前端 nginx + 静态资源 |
+| 镜像 | 架构 | 大小（未压缩） | 压缩后 | 说明 |
+|------|------|----------------|--------|------|
+| `wechatopenai/weknora-app` | amd64 | 1.68 GB | ≈ 533 MB | 后端 Go 服务 |
+| `wechatopenai/weknora-ui` | amd64 | 80 MB | ≈ 30 MB | 前端 nginx + 静态资源 |
 
 ---
 
 ## 前置条件
 
 **本地（开发机）**
-- Docker 正在运行
-- 构建参数已在 `.env` 配好（镜像源、代理等，见文末「构建参数」）
+- Docker 正在运行，且支持 buildx 交叉构建（Docker Desktop 默认支持）
+- 构建参数（镜像源、代理等）见文末「构建参数」，
+  改用 buildx 后需通过 `--build-arg 键=值` 显式传入，不再自动读 `.env`
 
 **服务器**
 - Docker 已安装
@@ -44,16 +59,54 @@ docker save → tmp/*.tar.gz  (压缩包)
 
 ---
 
-## 一、本地构建镜像
+## 一、本地构建 amd64 镜像
+
+> 用 `docker buildx build --platform linux/amd64`，**不要**用 `docker compose build`——
+> compose 会按当前机器架构构建，在 Mac 上出来的是 arm64。
+> 同时统一用 `:amd64` 作为 tag，避免覆盖本地开发用的 arm64 `:latest` 镜像。
+
+### 前端（有品牌 / 界面改动时必做）
 
 ```bash
 cd /Users/xuyifei_coco/Documents/fork_demo/WeKnora
 
-# 构建前后端（首次约 10~20 分钟，之后有缓存会快很多）
-docker compose build app frontend
+docker buildx build \
+  --platform linux/amd64 \
+  --provenance=false \
+  --build-arg NPM_REGISTRY=https://registry.npmmirror.com \
+  -t wechatopenai/weknora-ui:amd64 \
+  --load ./frontend
 ```
 
-**确认构建结果**：
+- `--provenance=false`：避免生成多平台 manifest 导致 `--load` 失败
+- `NPM_REGISTRY`：国内 npm 源，加速 `npm ci`
+
+### 后端（有 Go 代码改动时才需要本地构建）
+
+```bash
+cd /Users/xuyifei_coco/Documents/fork_demo/WeKnora
+
+docker buildx build \
+  --platform linux/amd64 \
+  --provenance=false \
+  -f docker/Dockerfile.app \
+  -t wechatopenai/weknora-app:amd64 \
+  --build-arg APK_MIRROR_ARG=mirrors.aliyun.com \
+  --build-arg GOPROXY_ARG=https://goproxy.cn \
+  --load .
+```
+
+> **后端没改过代码**时不必本地构建，直接拉官方 amd64 镜像：
+>
+> ```bash
+> # 先备份本地 arm64 版本，避免被覆盖后开发环境跑不动
+> docker tag wechatopenai/weknora-app:latest wechatopenai/weknora-app:arm64
+>
+> docker pull --platform linux/amd64 wechatopenai/weknora-app:latest
+> docker tag wechatopenai/weknora-app:latest wechatopenai/weknora-app:amd64
+> ```
+
+### 确认构建结果
 
 ```bash
 docker images --format '{{.Repository}}:{{.Tag}}  {{.CreatedSince}}  {{.Size}}' | grep weknora
@@ -62,28 +115,59 @@ docker images --format '{{.Repository}}:{{.Tag}}  {{.CreatedSince}}  {{.Size}}' 
 输出中的 `CreatedSince` 应是「刚刚」（minutes ago），**不是** `weeks ago`。
 如果还是 weeks，说明构建没有真正更新，检查上一步输出。
 
-> 只改了后端 → `docker compose build app`
-> 只改了前端 → `docker compose build frontend`
-> 两个都改了 → 两个都构建
+**再验证架构（关键，别跳过）**：
+
+```bash
+for img in wechatopenai/weknora-ui:amd64 wechatopenai/weknora-app:amd64; do
+  echo "$img -> $(docker image inspect $img --format '{{.Architecture}}/{{.Os}}')"
+done
+```
+
+期望两行都是 `amd64/linux`。
+**如果出现 `arm64/linux`，不要继续往下走**，检查 `--platform` 参数是否漏了。
 
 ---   
 
 ## 二、导出镜像包到 `tmp/`
 
+打包命令就是 `docker save <镜像:tag> | gzip > 文件`：
+
 ```bash
 cd /Users/xuyifei_coco/Documents/fork_demo/WeKnora
 mkdir -p tmp
 
-# 后端（约 500 MB，导出需 1~3 分钟）
-docker save wechatopenai/weknora-app:latest | gzip > ./tmp/weknora-app.tar.gz
+# 后端（1.68 GB → 约 533 MB，导出需 1~3 分钟）
+docker save wechatopenai/weknora-app:amd64 | gzip > ./tmp/weknora-app-amd64.tar.gz
 
-# 前端（约 30 MB）
-docker save wechatopenai/weknora-ui:latest | gzip > ./tmp/weknora-ui.tar.gz
+# 前端（80 MB → 约 30 MB）
+docker save wechatopenai/weknora-ui:amd64 | gzip > ./tmp/weknora-ui-amd64.tar.gz
 
 ls -lh tmp/
 ```
 
-> `tmp/` 已在 `.gitignore` 中（第 26 行），不会被提交到 git，可放心放几百 MB 的包。
+> **关键**：`docker save` 保存的是该 tag **当前指向的架构**。
+> 写 `:amd64` 打出来就是 amd64；写 `:latest` 在 Mac 上打出来是 arm64（就是之前踩过的坑）。
+> 文件名统一带 `-amd64` 后缀，避免和 arm64 包混在一起。
+
+**打包后验证包内架构**（只需几秒，强烈建议）：
+
+```bash
+cd /Users/xuyifei_coco/Documents/fork_demo/WeKnora/tmp
+for f in weknora-app-amd64 weknora-ui-amd64; do
+  cfg=$(tar -xzOf $f.tar.gz manifest.json | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['Config'])")
+  arch=$(tar -xzOf $f.tar.gz "$cfg" | python3 -c "import sys,json; print(json.load(sys.stdin)['architecture'])")
+  echo "$f.tar.gz -> $arch"
+done
+```
+
+期望输出：
+
+```
+weknora-app-amd64.tar.gz -> amd64
+weknora-ui-amd64.tar.gz -> amd64
+```
+
+> `tmp/` 已在 `.gitignore` 中，不会被提交到 git，可放心放几百 MB 的包。
 > 部署完成后建议删除，避免占用磁盘：`rm -f tmp/*.tar.gz`
 
 ---
@@ -93,7 +177,7 @@ ls -lh tmp/
 ```bash
 cd /Users/xuyifei_coco/Documents/fork_demo/WeKnora
 
-scp tmp/weknora-app.tar.gz tmp/weknora-ui.tar.gz root@<服务器IP>:/tmp/
+scp tmp/weknora-app-amd64.tar.gz tmp/weknora-ui-amd64.tar.gz root@<服务器IP>:/tmp/
 ```
 
 上传完成后可删除本地包：
@@ -114,12 +198,21 @@ rm -f tmp/*.tar.gz
 # 1) 进入项目目录（关键：compose 依赖该目录下的 docker-compose.yml）
 cd /opt/www/WeKnora
 
-# 2) 加载镜像
-docker load < /opt/www/docker_gz/tmp/weknora-app.tar.gz
-docker load < /opt/www/docker_gz/tmp/weknora-ui.tar.gz
+# 2) 加载镜像（包内 tag 为 :amd64）
+docker load < /opt/www/docker_gz/tmp/weknora-app-amd64.tar.gz
+docker load < /opt/www/docker_gz/tmp/weknora-ui-amd64.tar.gz
+
+# 2.1) 补上 compose 实际引用的 latest tag（docker-compose.yml 里写的是 :latest）
+docker tag wechatopenai/weknora-app:amd64 wechatopenai/weknora-app:latest
+docker tag wechatopenai/weknora-ui:amd64 wechatopenai/weknora-ui:latest
+
+# 2.2) 确认架构正确（关键，别跳过）
+docker image inspect wechatopenai/weknora-app:amd64 wechatopenai/weknora-ui:amd64 \
+  --format '{{.RepoTags}} -> {{.Architecture}}/{{.Os}}'
+#    期望：amd64 / linux
 
 # 3) 清理上传的包
-rm -f /opt/www/docker_gz/tmp/weknora-app.tar.gz /opt/www/docker_gz/tmp/weknora-ui.tar.gz
+rm -f /opt/www/docker_gz/tmp/weknora-app-amd64.tar.gz /opt/www/docker_gz/tmp/weknora-ui-amd64.tar.gz
 
 # 4) 确认镜像时间已更新（应为「刚刚」，不再是 weeks ago）
 docker images | grep weknora
@@ -196,7 +289,8 @@ docker compose logs app --tail=50     # 3. 日志是否有启动报错
 前端镜像没换成新的，或加载错了包：
 
 ```bash
-docker load < /tmp/weknora-ui.tar.gz     # 确认已加载
+docker load < /tmp/weknora-ui-amd64.tar.gz     # 确认已加载
+docker tag wechatopenai/weknora-ui:amd64 wechatopenai/weknora-ui:latest
 docker compose up -d --force-recreate frontend
 curl -s http://localhost:9008/ | grep title
 ```
@@ -221,6 +315,30 @@ docker image prune -f            # 清悬空镜像
 
 注意 `docker image prune -a` 会删掉未使用的镜像（包括你其他项目的），谨慎使用。
 
+**Q6：容器起不来，日志报 `exec format error`**
+
+镜像架构不对——传上去的是 arm64 包（最常见的坑）。排查：
+
+```bash
+docker image inspect wechatopenai/weknora-app:latest --format '{{.Architecture}}/{{.Os}}'
+# 期望 amd64/linux；若是 arm64/linux，说明包打错了
+```
+
+回到「二、导出镜像包」，用 `docker save wechatopenai/weknora-xxx:amd64 | gzip > ...` 重新打包，
+并按「一」确认构建时带了 `--platform linux/amd64`。
+
+**Q7：本地开发环境突然变慢**
+
+构建或拉取 amd64 镜像时如果用了 `:latest` tag，会覆盖 Mac 原生的 arm64 镜像，
+之后本地容器走模拟执行，明显变慢。恢复：
+
+```bash
+docker tag wechatopenai/weknora-app:arm64 wechatopenai/weknora-app:latest
+docker tag wechatopenai/weknora-ui:arm64  wechatopenai/weknora-ui:latest
+```
+
+本文档统一使用 `:amd64` tag 正是为了避开这个问题，本地 `:latest` 不受影响。
+
 ---
 
 ## 后续更新代码的流程
@@ -228,25 +346,39 @@ docker image prune -f            # 清悬空镜像
 改完代码后重复上述步骤即可，完整命令如下：
 
 ```bash
-# ===== 本地 =====
+# ===== 本地：改了什么就构建什么 =====
 cd /Users/xuyifei_coco/Documents/fork_demo/WeKnora
-
-docker compose build app          # 改了后端（前端用 frontend）
 mkdir -p tmp
-docker save wechatopenai/weknora-app:latest | gzip > tmp/weknora-app.tar.gz
-scp tmp/weknora-app.tar.gz root@<服务器IP>:/tmp/
+
+# —— 改了后端 ——
+docker buildx build --platform linux/amd64 --provenance=false \
+  -f docker/Dockerfile.app -t wechatopenai/weknora-app:amd64 --load .
+docker save wechatopenai/weknora-app:amd64 | gzip > tmp/weknora-app-amd64.tar.gz
+scp tmp/weknora-app-amd64.tar.gz root@<服务器IP>:/tmp/
+
+# —— 改了前端（logo / 文案 / 页面）——
+docker buildx build --platform linux/amd64 --provenance=false \
+  --build-arg NPM_REGISTRY=https://registry.npmmirror.com \
+  -t wechatopenai/weknora-ui:amd64 --load ./frontend
+docker save wechatopenai/weknora-ui:amd64 | gzip > tmp/weknora-ui-amd64.tar.gz
+scp tmp/weknora-ui-amd64.tar.gz root@<服务器IP>:/tmp/
 
 # ===== 服务器 =====
 cd /opt/www/WeKnora
-docker load < /tmp/weknora-app.tar.gz && rm -f /tmp/weknora-app.tar.gz
-docker compose up -d --force-recreate app
+docker load < /tmp/weknora-app-amd64.tar.gz && rm -f /tmp/weknora-app-amd64.tar.gz
+docker tag wechatopenai/weknora-app:amd64 wechatopenai/weknora-app:latest
+docker compose up -d --force-recreate app     # 前端则换成 frontend
 ```
 
 ---
 
-## 附：构建参数说明（`.env`）
+## 附：构建参数说明
 
-本地构建依赖以下配置，改动构建行为但不影响运行：
+以下参数只影响**构建过程**，不影响运行：
+
+> **注意**：`docker buildx build` **不会**自动读取 `.env`，必须用 `--build-arg 键=值` 显式传入；
+> `docker compose build` 才会自动读 `.env`。
+> 建议把「一」中命令的 `--build-arg` 值与你 `.env` 保持一致，避免两边不一致。
 
 | 变量 | 示例值 | 作用 |
 |------|--------|------|
@@ -277,3 +409,11 @@ docker compose up -d --force-recreate app
 
 前端容器内的 nginx 会把 `/api` 转发到 `app:8080`（容器网络内），
 所以**只需暴露 9008**，浏览器即可正常访问所有功能。
+
+# 删除镜像批量
+```bash
+docker rm 0a8dcfb783d # 删除容器
+docker images | grep weknora # 查看镜像
+docker images | grep weknora | awk '{print $3}' | xargs docker rmi
+```
+
