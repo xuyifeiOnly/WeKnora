@@ -158,6 +158,33 @@ func TestHonoursAVendorDeclaredPath(t *testing.T) {
 	assert.Equal(t, "/api/v1/rerank", *path)
 }
 
+// Aliyun MAAS / compatible-api uses the plural /reranks path. Appending the
+// default /rerank, or treating "…/reranks" as already ending in "/rerank",
+// both 404.
+func TestHonoursPluralReranksPath(t *testing.T) {
+	server, path, _ := serve(t, `{"results":[{"index":0,"relevance_score":0.9}]}`)
+	defer server.Close()
+
+	c := newClient(t, server.URL+"/compatible-api/v1", catalog.RerankSettings{Path: "/reranks", SendTopN: true})
+	out, err := c.Rerank(context.Background(), "q", []string{"d"})
+	require.NoError(t, err)
+	assert.Equal(t, "/compatible-api/v1/reranks", *path)
+	require.Len(t, out, 1)
+	assert.InDelta(t, 0.9, out[0].Score, 1e-9)
+}
+
+func TestDoesNotTreatReranksAsRerankSuffix(t *testing.T) {
+	server, path, _ := serve(t, `{"results":[]}`)
+	defer server.Close()
+
+	// Base already names /reranks; default Path /rerank must not strip it or
+	// re-append (…/reranks/rerank).
+	c := newClient(t, server.URL+"/compatible-api/v1/reranks", catalog.RerankSettings{})
+	_, err := c.Rerank(context.Background(), "q", []string{"d"})
+	require.NoError(t, err)
+	assert.Equal(t, "/compatible-api/v1/reranks", *path)
+}
+
 func TestRejectsAnOutOfRangeIndex(t *testing.T) {
 	server, _, _ := serve(t, `{"results":[{"index":9,"relevance_score":0.5}]}`)
 	defer server.Close()

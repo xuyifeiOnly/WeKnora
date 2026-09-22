@@ -37,7 +37,8 @@ const defaultPath = "/rerank"
 
 // url resolves the endpoint. A vendor whose default base URL already names
 // the full rerank endpoint — and an operator who pasted one — must not have
-// the path appended twice.
+// the path appended twice. Aliyun's compatible-api dialect uses `/reranks`
+// (plural); that spelling must not be treated as already ending in `/rerank`.
 func (c *Client) url() string {
 	if c.cfg.Endpoint.URL != "" {
 		return c.cfg.Endpoint.Resolve("")
@@ -46,10 +47,24 @@ func (c *Client) url() string {
 	if path == "" {
 		path = defaultPath
 	}
-	if strings.HasSuffix(strings.TrimRight(c.cfg.Endpoint.BaseURL, "/"), path) {
-		path = ""
+	base := strings.TrimRight(c.cfg.Endpoint.BaseURL, "/")
+	if hasExactPathSuffix(base, path) || hasExactPathSuffix(base, "/reranks") || hasExactPathSuffix(base, "/rerank") {
+		return base
 	}
 	return c.cfg.Endpoint.Resolve(path)
+}
+
+// hasExactPathSuffix reports whether base ends with path as a full segment.
+// strings.HasSuffix("…/reranks", "/rerank") is true, which would skip
+// appending and 404 against Aliyun MAAS; require an exact trailing match.
+func hasExactPathSuffix(base, path string) bool {
+	if path == "" {
+		return false
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return strings.HasSuffix(base, path)
 }
 
 type request struct {

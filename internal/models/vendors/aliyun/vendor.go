@@ -58,17 +58,16 @@
 //   - rerank is a separate DashScope-native endpoint
 //     (/api/v1/services/rerank/text-rerank/text-rerank).
 //
-// qwen3-rerank is a second, incompatible rerank protocol on the same vendor.
-// The text-rerank page puts it on /compatible-api/v1/reranks and states
-// outright that "两种接口的请求体结构和响应格式不同": its request is flat
-// (query / documents at the top level, no input/parameters wrapper) and its
-// response carries `results` at the top level with no `output` object. This
-// package implements only the native shape that gte-rerank-v2 and
-// qwen3.7-text-rerank use, so the entry is marked deprecated: it stays
-// resolvable for a row that already names it, but the picker no longer offers
-// a model that would be sent to the wrong path and decoded with the wrong
-// shape. Serving it needs a fourth rerank protocol package
-// (https://help.aliyun.com/zh/model-studio/text-rerank-api).
+// qwen3-rerank is a second rerank dialect on the same vendor. The text-rerank
+// page puts it on /compatible-api/v1/reranks with a flat Cohere-shaped body
+// ({model, query, documents, top_n} → {results}). Workspace MAAS hosts
+// (*.maas.aliyuncs.com) only speak that path; pasting the chat
+// compatible-mode/v1 base 404s. The factory rewrites those bases onto
+// cohererank + /reranks (see internal/models/rerank/aliyun_compatible.go).
+// This package's default RerankAPI remains the native DashScope shape that
+// gte-rerank-v2 uses. The qwen3-rerank catalog entry stays deprecated in the
+// picker until a default base URL can be declared per model entry without
+// colliding with the native endpoint.
 //
 // unverified: no page states whether `prompt_cache_key` is accepted, so the
 // protocol default (not sent) is kept.

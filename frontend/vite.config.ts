@@ -128,7 +128,7 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5178,
+    port: Number(process.env.FRONTEND_PORT) || 9008,
     host: true,
     // 代理配置，用于开发环境
     proxy: {

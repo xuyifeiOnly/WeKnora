@@ -153,6 +153,9 @@ func newReranker(config *RerankerConfig) (Reranker, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Aliyun MAAS / compatible-api speak Cohere-shaped /reranks; operators
+	// often paste the chat compatible-mode base, which 404s on /rerank.
+	rewriteAliyunCompatibleAPIRerank(resolved)
 	if err := validateRerankBaseURL(resolved.BaseURL); err != nil {
 		return nil, err
 	}

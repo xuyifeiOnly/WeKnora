@@ -2717,7 +2717,7 @@ export default {
     kbLockedByAgent: 'Knowledge base configuration is locked by the current agent',
     kbDisabledByAgent: 'Knowledge base is disabled by the current agent',
     modelLockedByAgent: 'Model selection is locked by the current agent',
-    imageUploadDisabledByAgent: 'Image upload is not enabled for this agent',
+    imageUploadDisabledByAgent: 'Image recognition is off for this agent; uploaded as an attachment. Enable “Image upload” in agent settings for vision.',
     goToAgentSettings: 'Go to agent settings'
   },
   createChat: {

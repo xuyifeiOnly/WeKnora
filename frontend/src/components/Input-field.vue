@@ -92,6 +92,47 @@ const isImageFile = (file: File) => {
   return ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp'].some(ext => fileName.endsWith(ext));
 };
 
+/** Clipboard pastes often omit a filename; invent one so upload/MIME checks still work. */
+const normalizeClipboardImage = (file: File, index: number): File => {
+  if (file.name && file.name.trim() && file.name.includes('.')) {
+    return file;
+  }
+  const subtype = (file.type.split('/')[1] || 'png').split('+')[0];
+  const ext = subtype === 'jpeg' ? 'jpg' : subtype;
+  return new File([file], `pasted-image-${Date.now()}-${index}.${ext}`, {
+    type: file.type || `image/${subtype}`,
+    lastModified: file.lastModified || Date.now(),
+  });
+};
+
+const extractClipboardImages = (e: ClipboardEvent): File[] => {
+  const out: File[] = [];
+  const seen = new Set<string>();
+  const push = (file: File | null | undefined) => {
+    if (!file || !isImageFile(file)) return;
+    const key = `${file.type}:${file.size}:${file.lastModified}:${file.name}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(normalizeClipboardImage(file, out.length));
+  };
+
+  const items = e.clipboardData?.items;
+  if (items) {
+    for (const item of items) {
+      if (item.kind === 'file' && item.type.startsWith('image/')) {
+        push(item.getAsFile());
+      }
+    }
+  }
+  const files = e.clipboardData?.files;
+  if (files) {
+    for (const file of Array.from(files)) {
+      push(file);
+    }
+  }
+  return out;
+};
+
 const handleDroppedFiles = (files: File[]) => {
   if (!files.length) return;
 
@@ -99,10 +140,12 @@ const handleDroppedFiles = (files: File[]) => {
   const attachmentFiles = files.filter(file => !isImageFile(file));
 
   if (imageFiles.length > 0) {
-    if (isImageUploadEnabledByAgent.value) {
+    if (canAcceptImages.value) {
       addImageFiles(imageFiles);
     } else {
       MessagePlugin.warning(t('input.imageUploadDisabledByAgent'));
+      // Still accept as document attachments so paste/drop is not a dead end.
+      attachmentUploadRef.value?.addFiles(imageFiles);
     }
   }
 
@@ -126,7 +169,7 @@ const handleImageSelect = (event: Event) => {
 };
 
 const addImageFiles = (files: File[]) => {
-  if (!isImageUploadEnabledByAgent.value) return;
+  if (!canAcceptImages.value) return;
   const allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
   const maxSize = 10 * 1024 * 1024;
   for (const file of files) {
@@ -134,7 +177,7 @@ const addImageFiles = (files: File[]) => {
       MessagePlugin.warning(t('chat.imageTooMany'));
       break;
     }
-    if (!allowed.includes(file.type)) {
+    if (!allowed.includes(file.type) && !isImageFile(file)) {
       MessagePlugin.warning(t('chat.imageTypeSizeError'));
       continue;
     }
@@ -253,8 +296,8 @@ watch([selectedAgentId, agentKnowledgeBases, agentKBSelectionMode], ([newAgentId
     if (showMention.value) {
       loadMentionItems(mentionQuery.value, true);
     }
-    // Clear images when switching to an agent that doesn't support image upload
-    if (!isImageUploadEnabledByAgent.value && uploadedImages.value.length > 0) {
+    // Clear images when switching to an agent/model that cannot accept them
+    if (!canAcceptImages.value && uploadedImages.value.length > 0) {
       uploadedImages.value.forEach(img => URL.revokeObjectURL(img.preview));
       uploadedImages.value = [];
     }
@@ -451,6 +494,16 @@ const isImageUploadEnabledByAgent = computed(() => {
   return currentAgentConfig.value?.image_upload_enabled === true;
 });
 
+// 当前对话模型是否本身支持视觉（可直接识图，无需单独 VLM）
+const selectedModelSupportsVision = computed(() => {
+  return selectedModel.value?.parameters?.supports_vision === true;
+});
+
+// 可粘贴/拖拽/选择图片：智能体开启图片上传，或当前模型支持视觉
+const canAcceptImages = computed(() => {
+  return isImageUploadEnabledByAgent.value || selectedModelSupportsVision.value;
+});
+
 // Input 工具栏：仅当智能体已启用且搜索引擎可用时才显示
 const showWebSearchButton = computed(() => {
   if (hasAgentConfig.value && settingsStore.selectedAgentSourceTenantId && !isWebSearchReadinessKnown.value) {
@@ -465,7 +518,7 @@ const showWebSearchButton = computed(() => {
     selectedSharedAgent.value?.web_search_ready,
   );
 });
-const showImageUploadButton = computed(() => isImageUploadEnabledByAgent.value);
+const showImageUploadButton = computed(() => canAcceptImages.value);
 
 // 模型选择是否被智能体锁定 - 已移除锁定逻辑，允许用户自由切换模型
 const isModelLockedByAgent = computed(() => {
@@ -2396,19 +2449,17 @@ const onKeydown = (val: string, event: { e: KeyboardEvent }) => {
 }
 
 const onPaste = (e: ClipboardEvent) => {
-  const items = e.clipboardData?.items;
-  if (!items) return;
-  const imageFiles: File[] = [];
-  for (const item of items) {
-    if (item.type.startsWith('image/')) {
-      const file = item.getAsFile();
-      if (file) imageFiles.push(file);
-    }
-  }
-  if (imageFiles.length > 0 && isImageUploadEnabledByAgent.value) {
-    e.preventDefault();
+  const imageFiles = extractClipboardImages(e);
+  if (imageFiles.length === 0) return;
+
+  e.preventDefault();
+  if (canAcceptImages.value) {
     addImageFiles(imageFiles);
+    return;
   }
+
+  MessagePlugin.warning(t('input.imageUploadDisabledByAgent'));
+  attachmentUploadRef.value?.addFiles(imageFiles);
 };
 
 const onDrop = (e: DragEvent) => {

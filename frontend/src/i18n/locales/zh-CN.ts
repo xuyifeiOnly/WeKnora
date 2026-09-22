@@ -4838,7 +4838,7 @@ export default {
     kbLockedByAgent: '当前智能体已锁定知识库配置',
     kbDisabledByAgent: '当前智能体已禁用知识库功能',
     modelLockedByAgent: '当前智能体已锁定模型配置',
-    imageUploadDisabledByAgent: '当前智能体未启用图片上传',
+    imageUploadDisabledByAgent: '当前智能体未开启图片识别；已作为附件上传。可在智能体设置中开启「图片上传」以启用识图',
     goToAgentSettings: '去设置智能体',
     messages: {
       enterContent: '请先输入内容!',

@@ -244,12 +244,30 @@ func (h *Handler) parseQARequest(c *gin.Context, logPrefix string) (*qaRequestCo
 	// VLM analysis for RAG paths is deferred to the pipeline rewrite step.
 	// For pure chat paths with non-vision models, VLM analysis runs here as fallback.
 	if len(request.Images) > 0 {
-		if customAgent == nil || !customAgent.Config.ImageUploadEnabled {
+		allowImages := customAgent != nil && customAgent.Config.ImageUploadEnabled
+		if !allowImages {
+			// Chat models that declare vision can receive images even when the
+			// agent has not toggled the dedicated image-upload switch (operators
+			// often pick a multimodal summary model and expect paste to work).
+			modelID := strings.TrimSpace(request.SummaryModelID)
+			if modelID == "" && customAgent != nil {
+				modelID = strings.TrimSpace(customAgent.Config.ModelID)
+			}
+			if modelID != "" && h.modelService != nil {
+				if modelInfo, err := h.modelService.GetModelByID(ctx, modelID); err == nil && modelInfo != nil {
+					allowImages = modelInfo.Parameters.SupportsVision
+				}
+			}
+		}
+		if !allowImages {
 			logger.Warnf(ctx, "[%s] Image upload is not enabled for this agent, rejecting %d images", logPrefix, len(request.Images))
 			return nil, nil, errors.NewBadRequestError("Image upload is not enabled for this agent")
 		}
 		tenantID := c.GetUint64(types.TenantIDContextKey.String())
-		agentStorageProvider := customAgent.Config.ImageStorageProvider
+		agentStorageProvider := ""
+		if customAgent != nil {
+			agentStorageProvider = customAgent.Config.ImageStorageProvider
+		}
 		if err := h.saveImageAttachments(ctx, request.Images, tenantID, agentStorageProvider); err != nil {
 			logger.Errorf(ctx, "[%s] Failed to save images: %v", logPrefix, err)
 			return nil, nil, errors.NewBadRequestError(fmt.Sprintf("Image save failed: %v", err))
@@ -1609,7 +1627,19 @@ func (h *Handler) resolveTemporaryAttachments(streamCtx *sseStreamContext, reqCt
 	// later Agent-mode turn rebuilds history from the Attachments column and
 	// sees empty attachments (see buildUserHistoryMessage in agent_history.go).
 	h.persistResolvedAttachmentContent(ctx, reqCtx, attachments)
-	if reqCtx.customAgent != nil && reqCtx.customAgent.Config.ImageUploadEnabled {
+	allowImagePassThrough := reqCtx.customAgent != nil && reqCtx.customAgent.Config.ImageUploadEnabled
+	if !allowImagePassThrough && h.modelService != nil {
+		modelID := strings.TrimSpace(reqCtx.summaryModelID)
+		if modelID == "" && reqCtx.customAgent != nil {
+			modelID = strings.TrimSpace(reqCtx.customAgent.Config.ModelID)
+		}
+		if modelID != "" {
+			if modelInfo, err := h.modelService.GetModelByID(ctx, modelID); err == nil && modelInfo != nil {
+				allowImagePassThrough = modelInfo.Parameters.SupportsVision
+			}
+		}
+	}
+	if allowImagePassThrough {
 		for _, imageURL := range temporaryResult.ImageURLs {
 			reqCtx.images = append(reqCtx.images, ImageAttachment{URL: imageURL})
 		}
