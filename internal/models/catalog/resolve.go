@@ -26,6 +26,9 @@ const (
 	// budget for rerank, opt-in per row. It is never sent unless the operator
 	// set it: vendors that do not implement it reject the unknown field.
 	ExtraTruncatePromptTokens = "truncate_prompt_tokens"
+	// LegacyTruncatePromptTokens is the embedding truncation budget the
+	// pre-catalog OpenAI-compatible client sent whenever a row left it at 0.
+	LegacyTruncatePromptTokens = 511
 	// ExtraScoreScale overrides the vendor rerank score scale for one row.
 	// A self-hosted gateway serves whatever reranker was deployed behind it
 	// and the two families disagree: BGE-class models answer a 0..1
@@ -42,6 +45,11 @@ type Ref struct {
 	ModelType types.ModelType
 	Extra     map[string]string
 	Override  *types.ModelSpecOverride
+	// TruncatePromptTokens is an embedding row's
+	// embedding_parameters.truncate_prompt_tokens. It is a first-class column
+	// rather than an extra_config key, which is why it arrives here instead
+	// of in Extra.
+	TruncatePromptTokens int
 }
 
 // Resolved is the fully merged view of one model: which vendor, which
@@ -68,6 +76,16 @@ type Resolved struct {
 	// rerank overlay is not merged for it.
 	RerankAPI api.RerankAPI
 	Rerank    RerankSettings
+
+	// EmbeddingAPI and Embeddings are filled only for an embedding reference,
+	// for the same reason.
+	EmbeddingAPI api.EmbeddingAPI
+	Embeddings   EmbeddingsSettings
+
+	// TranscriptionAPI and Transcriptions are filled only for an ASR
+	// reference.
+	TranscriptionAPI api.TranscriptionAPI
+	Transcriptions   TranscriptionsSettings
 }
 
 // Resolve merges the vendor, catalog entry, extra-config and per-row
@@ -92,9 +110,9 @@ func Resolve(ref Ref) (*Resolved, error) {
 		baseURL = strings.TrimRight(vendor.GetDefaultURL(modelType), "/")
 	}
 
-	spec, cataloged := vendor.FindModel(ref.Model)
+	spec, cataloged := vendor.FindModel(ref.Model, modelType)
 	if !cataloged {
-		spec = ModelSpec{ID: ref.Model, Type: types.ModelTypeKnowledgeQA}
+		spec = ModelSpec{ID: ref.Model, Type: entryType(modelType)}
 	}
 	if spec.API == "" {
 		spec.API = vendor.API
@@ -105,6 +123,12 @@ func Resolve(ref Ref) (*Resolved, error) {
 
 	if modelType == types.ModelTypeRerank {
 		return resolveRerank(ref, vendor, spec, cataloged, baseURL)
+	}
+	if modelType == types.ModelTypeEmbedding {
+		return resolveEmbeddings(ref, vendor, spec, cataloged, baseURL)
+	}
+	if modelType == types.ModelTypeASR {
+		return resolveTranscriptions(ref, vendor, spec, cataloged, baseURL)
 	}
 
 	resolvedAPI := spec.API
@@ -442,6 +466,138 @@ func resolveRerank(
 		RemoteModel: ref.Model,
 		RerankAPI:   protocol,
 		Rerank:      settings,
+	}
+	if override := strings.TrimSpace(ref.Extra[ExtraRemoteModelName]); override != "" {
+		out.RemoteModel = override
+	}
+	return out, nil
+}
+
+// resolveEmbeddings merges the embedding layers, in the same order as
+// resolveRerank: protocol default, vendor, model entry, row spec override,
+// then extra_config, which is the operator speaking about this one row.
+func resolveEmbeddings(
+	ref Ref, vendor *Vendor, spec ModelSpec, cataloged bool, baseURL string,
+) (*Resolved, error) {
+	protocol := vendor.EmbeddingAPI
+	if protocol == "" {
+		protocol = api.EmbeddingOpenAI
+	}
+	if !protocol.Known() {
+		return nil, fmt.Errorf("catalog: unknown embedding api %q for provider %s", protocol, vendor.ID)
+	}
+
+	settings := DefaultEmbeddings()
+	apply(&settings, &vendor.Compat.Embeddings)
+	if len(spec.Compat) > 0 {
+		overlay := &EmbeddingsCompat{}
+		if err := decodeCompat(spec.Compat, overlay); err != nil {
+			return nil, fmt.Errorf("embeddings compat: %w", err)
+		}
+		apply(&settings, overlay)
+	}
+	if raw := ref.Override.CompatJSON(); len(raw) > 0 {
+		overlay := &EmbeddingsCompat{}
+		if err := decodeCompat(raw, overlay); err != nil {
+			return nil, fmt.Errorf("embeddings compat: %w", err)
+		}
+		apply(&settings, overlay)
+	}
+	// The row may carry a truncation budget, but the extension is vLLM's and
+	// appears in no managed vendor's schema. Dropping it where the vendor
+	// does not implement it is the quiet direction on purpose: unlike the
+	// rerank opt-in, this field has a UI control that every embedding row
+	// has always carried, so refusing to resolve would break rows whose only
+	// mistake is a non-zero default.
+	//
+	// Where it is accepted, an unset row keeps the budget the pre-catalog
+	// client always sent. A self-hosted index was built with long chunks cut
+	// at that length; embedding new chunks uncut would put them in a
+	// different place from the old ones without anything failing.
+	if settings.AcceptsTruncatePromptTokens {
+		settings.TruncatePromptTokens = ref.TruncatePromptTokens
+		if settings.TruncatePromptTokens <= 0 {
+			settings.TruncatePromptTokens = LegacyTruncatePromptTokens
+		}
+	}
+
+	// A model entry may name a different dialect than the vendor default.
+	if settings.API != "" {
+		if !settings.API.Known() {
+			return nil, fmt.Errorf(
+				"catalog: unknown embedding api %q on %s/%s", settings.API, vendor.ID, spec.ID)
+		}
+		protocol = settings.API
+	}
+	settings.API = protocol
+
+	out := &Resolved{
+		Vendor:       vendor,
+		Spec:         spec,
+		Cataloged:    cataloged,
+		BaseURL:      baseURL,
+		RemoteModel:  ref.Model,
+		EmbeddingAPI: protocol,
+		Embeddings:   settings,
+	}
+	if override := strings.TrimSpace(ref.Extra[ExtraRemoteModelName]); override != "" {
+		out.RemoteModel = override
+	}
+	return out, nil
+}
+
+// resolveTranscriptions merges the speech-to-text layers, in the same order
+// as resolveEmbeddings: protocol default, vendor compat, the catalog entry,
+// the row's own compat, then remote_model_name.
+func resolveTranscriptions(
+	ref Ref, vendor *Vendor, spec ModelSpec, cataloged bool, baseURL string,
+) (*Resolved, error) {
+	protocol := vendor.TranscriptionAPI
+	if protocol == "" {
+		protocol = api.TranscriptionOpenAI
+	}
+	settings := DefaultTranscriptions()
+	apply(&settings, &vendor.Compat.Transcriptions)
+	for _, raw := range []json.RawMessage{spec.Compat, ref.Override.CompatJSON()} {
+		if len(raw) == 0 {
+			continue
+		}
+		overlay := &TranscriptionsCompat{}
+		if err := decodeCompat(raw, overlay); err != nil {
+			return nil, fmt.Errorf("transcriptions compat: %w", err)
+		}
+		apply(&settings, overlay)
+	}
+	if settings.API != "" {
+		protocol = settings.API
+	}
+	if !protocol.Known() {
+		return nil, fmt.Errorf("catalog: unknown transcription api %q for %s/%s", protocol, vendor.ID, spec.ID)
+	}
+	settings.API = protocol
+	switch settings.LanguageParam {
+	case "", LanguageForm, LanguageHeader, LanguageASROptions:
+	default:
+		return nil, fmt.Errorf("catalog: unknown language_param %q for %s/%s",
+			settings.LanguageParam, vendor.ID, spec.ID)
+	}
+	// Checked after every layer: an entry may lift a vendor-wide refusal for
+	// the one model that takes the audio in the request.
+	if settings.UnsupportedReason != "" {
+		return nil, fmt.Errorf(
+			"catalog: %s does not serve %q through a protocol this build implements: %s",
+			vendor.ID, spec.ID, settings.UnsupportedReason,
+		)
+	}
+
+	out := &Resolved{
+		Vendor:           vendor,
+		Spec:             spec,
+		Cataloged:        cataloged,
+		BaseURL:          baseURL,
+		RemoteModel:      ref.Model,
+		TranscriptionAPI: protocol,
+		Transcriptions:   settings,
 	}
 	if override := strings.TrimSpace(ref.Extra[ExtraRemoteModelName]); override != "" {
 		out.RemoteModel = override

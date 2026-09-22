@@ -344,6 +344,10 @@ type VendorCompat struct {
 	// Rerank is the rerank protocol overlay. It has no per-protocol variants:
 	// a vendor serves exactly one rerank dialect.
 	Rerank RerankCompat `json:"rerank,omitempty"`
+	// Embeddings is the embedding protocol overlay, likewise one per vendor.
+	Embeddings EmbeddingsCompat `json:"embeddings,omitempty"`
+	// Transcriptions is the speech-to-text overlay, likewise one per vendor.
+	Transcriptions TranscriptionsCompat `json:"transcriptions,omitempty"`
 }
 
 // apply writes the set fields of an overlay struct onto a settings struct
